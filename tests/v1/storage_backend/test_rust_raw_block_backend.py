@@ -5,6 +5,7 @@ from __future__ import annotations
 
 # Standard
 from concurrent.futures import Future
+from unittest.mock import patch
 import asyncio
 import os
 import struct
@@ -802,7 +803,7 @@ def test_rust_raw_block_backend_tp_paths_must_be_unique(memory_allocator, loop_i
     not _has_ext(), reason="lmcache_rust_raw_block_io extension not installed"
 )
 def test_rust_raw_block_backend_warns_on_cross_rank_metadata_load(
-    memory_allocator, loop_in_thread, caplog
+    memory_allocator, loop_in_thread
 ):
     """Warn when loading metadata whose first entry belongs to another worker."""
     with tempfile.TemporaryDirectory() as td:
@@ -895,10 +896,9 @@ def test_rust_raw_block_backend_warns_on_cross_rank_metadata_load(
             memory_allocator=memory_allocator,
         )
 
-        with caplog.at_level(
-            "WARNING",
-            logger="lmcache.v1.storage_backend.plugins.rust_raw_block_backend",
-        ):
+        with patch(
+            "lmcache.v1.storage_backend.plugins.rust_raw_block_backend.logger.warning"
+        ) as mock_warning:
             backend_tp1 = RustRawBlockBackend(
                 config=config_tp1_mis,
                 metadata=metadata_tp1,
@@ -907,9 +907,18 @@ def test_rust_raw_block_backend_warns_on_cross_rank_metadata_load(
                 dst_device="cpu",
             )
         try:
-            warning_text = "\n".join(record.message for record in caplog.records)
-            assert "loaded metadata may belong to another worker" in warning_text
-            assert "current_worker_id=1" in warning_text
-            assert "first_entry_worker_id=0" in warning_text
+            matched = False
+            for call in mock_warning.call_args_list:
+                call_args = call.args
+                if not call_args:
+                    continue
+                fmt = call_args[0]
+                if "loaded metadata may belong to another worker" not in str(fmt):
+                    continue
+                assert int(call_args[2]) == 1
+                assert int(call_args[3]) == 0
+                matched = True
+                break
+            assert matched, "Expected cross-rank metadata warning was not emitted"
         finally:
             backend_tp1.close()
